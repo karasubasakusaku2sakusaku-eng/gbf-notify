@@ -1,86 +1,91 @@
 import os
-import time
 import requests
 import xml.etree.ElementTree as ET
 
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 
-# まずは nitter を試す（X API不要）
+# グラブル公式（X @granbluefantasy）
 RSS_URLS = [
     "https://nitter.net/granbluefantasy/rss",
 ]
 
 STATE_FILE = "last_seen.txt"
 
-def load_last_seen() -> str:
+# === すぐる指定：拾いたいキーワード ===
+KEYWORDS = [
+    # ガチャ系
+    "ガチャ", "レジェンドガチャ", "グランデフェス", "レジェフェス",
+
+    # アップデート系
+    "アップデート", "更新", "実装", "追加", "最終上限解放", "バランス調整",
+
+    # 追加指定
+    "スキン", "キャンペーン", "開催", "グラブルフェス",
+    "紹介", "セット", "サプライズ",
+]
+
+def load_last_seen():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return f.read().strip()
     except FileNotFoundError:
         return ""
 
-def save_last_seen(value: str):
+def save_last_seen(value):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         f.write(value)
 
 def fetch_latest():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (gbf-notify; GitHubActions)"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (gbf-notify; GitHubActions)"}
 
-    last_err = None
     for url in RSS_URLS:
         try:
             r = requests.get(url, headers=headers, timeout=25)
-            # 200以外は弾く
             r.raise_for_status()
-
             text = (r.text or "").strip()
-            # 取得失敗（空）なら次へ
-            if not text:
-                last_err = f"Empty response from {url}"
-                continue
 
-            # XMLじゃないもの（HTML等）が返ったら次へ
-            if "<rss" not in text and "<feed" not in text:
-                last_err = f"Non-RSS response from {url} (starts with: {text[:30]!r})"
+            # RSSじゃないものはスキップ
+            if not text or ("<rss" not in text and "<feed" not in text):
                 continue
 
             root = ET.fromstring(text)
             item = root.find("./channel/item")
             if item is None:
-                last_err = f"No <item> found in RSS from {url}"
                 continue
 
             title = (item.findtext("title") or "").strip()
             link = (item.findtext("link") or "").strip()
             return title, link
-
-        except Exception as e:
-            last_err = f"{url}: {type(e).__name__}: {e}"
+        except Exception:
             continue
 
-    # ここまで全部ダメなら「今回は何もしない」で終了（失敗扱いにしない）
-    print("RSS fetch failed; skip this run:", last_err)
     return None
 
-def post(msg: str):
-    res = requests.post(WEBHOOK_URL, json={"content": msg}, timeout=25)
-    res.raise_for_status()
+def post(msg):
+    requests.post(WEBHOOK_URL, json={"content": msg}, timeout=25)
 
 def main():
     last = load_last_seen()
     latest = fetch_latest()
     if not latest:
+        print("RSS not available this run")
         return
 
     title, link = latest
-    if link and link != last:
-        post(f"📢 **グラブル公式**\n{title}\n{link}")
-        save_last_seen(link)
-        print("Posted:", title)
-    else:
-        print("No new post.")
+
+    # キーワードフィルタ
+    if not any(k in title for k in KEYWORDS):
+        print("Filtered out:", title)
+        return
+
+    # すでに送った投稿なら何もしない
+    if link == last:
+        print("No new post")
+        return
+
+    post(f"📢 **グラブル公式**\n{title}\n{link}")
+    save_last_seen(link)
+    print("Posted:", title)
 
 if __name__ == "__main__":
     main()
