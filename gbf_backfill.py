@@ -5,13 +5,14 @@ import xml.etree.ElementTree as ET
 
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 
-RSS_URL = "https://nitter.net/granbluefantasy/rss"
-STATE_FILE = "last_seen.txt"
+# まずは nitter を試す（必要なら増やせる）
+RSS_URLS = [
+    "https://nitter.net/granbluefantasy/rss",
+]
 
-# 何件流すか（デフォ10）
+STATE_FILE = "last_seen.txt"
 BACKFILL_COUNT = int(os.environ.get("BACKFILL_COUNT", "10"))
 
-# === すぐる指定：拾いたいキーワード（本番と同じ） ===
 KEYWORDS = [
     "ガチャ", "レジェンドガチャ", "グランデフェス", "レジェフェス",
     "アップデート", "更新", "実装", "追加", "最終上限解放", "バランス調整",
@@ -31,28 +32,55 @@ def save_last_seen(value):
         f.write(value)
 
 def post(msg):
-    requests.post(WEBHOOK_URL, json={"content": msg}, timeout=25)
+    res = requests.post(WEBHOOK_URL, json={"content": msg}, timeout=25)
+    res.raise_for_status()
+
+def fetch_items():
+    headers = {"User-Agent": "Mozilla/5.0 (gbf-notify; GitHubActions)"}
+    last_err = None
+
+    for url in RSS_URLS:
+        try:
+            r = requests.get(url, headers=headers, timeout=25)
+            r.raise_for_status()
+            text = (r.text or "").strip()
+
+            # 空 or RSSじゃない（HTML等）なら次へ
+            if not text:
+                last_err = f"Empty response from {url}"
+                continue
+            if "<rss" not in text and "<feed" not in text:
+                last_err = f"Non-RSS response from {url} (starts with: {text[:30]!r})"
+                continue
+
+            root = ET.fromstring(text)
+            items = root.findall("./channel/item")
+            if not items:
+                last_err = f"No <item> found in RSS from {url}"
+                continue
+
+            return items
+
+        except Exception as e:
+            last_err = f"{url}: {type(e).__name__}: {e}"
+            continue
+
+    print("RSS fetch failed; skip this run:", last_err)
+    return None
 
 def main():
-    headers = {"User-Agent": "Mozilla/5.0 (gbf-notify; GitHubActions)"}
-    r = requests.get(RSS_URL, headers=headers, timeout=25)
-    r.raise_for_status()
-    text = (r.text or "").strip()
-    root = ET.fromstring(text)
-
-    items = root.findall("./channel/item")
+    items = fetch_items()
     if not items:
-        print("No items")
         return
 
     last_seen = load_last_seen()
 
-    # RSSは新しい順で並ぶので、いったんキーワードで絞って、上からN件取り、古い→新しい順で送る
+    # 新しい順 → 条件一致だけ抽出
     filtered = []
     for it in items:
         title = (it.findtext("title") or "").strip()
         link = (it.findtext("link") or "").strip()
-        if not link or not title:
+        if not title or not link:
             continue
         if not any(k in title for k in KEYWORDS):
             continue
@@ -62,25 +90,23 @@ def main():
         print("No matching items")
         return
 
+    # 上からN件（新しい順）→ 送る時は古い→新しい順
     subset = filtered[:BACKFILL_COUNT]
-    subset.reverse()  # 古い→新しい順にする
+    subset.reverse()
 
-    posted_any = False
     newest_link_posted = None
 
     for title, link in subset:
-        # すでに last_seen と同じリンクなら、その投稿より前は送らない（無限再投下防止）
+        # last_seenに到達したらそれより古いのは送らない
         if last_seen and link == last_seen:
             print("Reached last_seen; stop")
             break
 
         post(f"🧪 **テスト反映（過去ログ）**\n📢 **グラブル公式**\n{title}\n{link}")
-        posted_any = True
         newest_link_posted = link
         time.sleep(1.2)  # 連投しすぎ防止
 
-    # last_seen を最新に更新（次から通常Botが重複で流しにくいように）
-    if posted_any and newest_link_posted:
+    if newest_link_posted:
         save_last_seen(newest_link_posted)
         print("Updated last_seen to:", newest_link_posted)
     else:
