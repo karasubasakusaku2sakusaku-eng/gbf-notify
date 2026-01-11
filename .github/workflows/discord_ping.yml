@@ -1,0 +1,16 @@
+name: discord-webhook-ping
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send ping to Discord webhook
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: |
+          curl -X POST -H "Content-Type: application/json" \
+          -d '{"content":"🧪 Webhookテスト：GitHub Actions から Discord に送信できています！"}' \
+          "$WEBHOOK_URL"
